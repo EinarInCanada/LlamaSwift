@@ -2,7 +2,7 @@
 
 A Swift Package that brings [llama.cpp](https://github.com/ggerganov/llama.cpp) inference to iOS, including full multimodal support (images and audio) via `libmtmd`.
 
-Originally built as the inference backbone of [Gemholic](https://github.com/EinarInCanada/Gemholic).
+
 
 ---
 
