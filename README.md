@@ -1,8 +1,37 @@
 # LlamaSwift
 
-A minimal Swift Package that bridges [llama.cpp](https://github.com/ggerganov/llama.cpp) into Swift projects on iOS and macOS.
+A Swift Package that brings [llama.cpp](https://github.com/ggerganov/llama.cpp) inference to iOS, including full multimodal support (images and audio) via `libmtmd`.
 
-LlamaSwift re-exports the compiled `llama` C library so Swift callers can use the full llama.cpp API without any Objective-C bridging headers or manual module maps. It is the inference backbone of [Gemholic](https://github.com/EinarInCanada/Gemholic).
+Originally built as the inference backbone of [Gemholic](https://github.com/EinarInCanada/Gemholic).
+
+---
+
+## What's included
+
+| File | Description |
+|---|---|
+| `Exports.swift` | Re-exports the compiled `llama` C library into Swift |
+| `LlamaContext.swift` | Full inference engine: context lifecycle, text generation, multimodal prompt feeding, custom sampler |
+| `MTMDContext.swift` | Swift bridge over `libmtmd`: image/audio bitmap handling, tokenization, chunk encoding, embedding extraction |
+
+### LlamaContext
+
+- Loads a GGUF model and initialises a 32 K-token context window with Metal GPU acceleration
+- `generateIncrementalResponse` — streaming text generation with a cancel flag
+- `generateIncrementalResponseWithImages` — feeds image frames into the KV cache via libmtmd then streams tokens
+- `generateIncrementalResponseWithAudio` — same for PCM F32 audio
+- `generateIncrementalResponseWithMixedMedia` — images and audio in a single prompt
+- Hand-written Top-K / Top-P / Temperature sampler (no external sampling library)
+- `SamplingOverride` for task-mode decoding (e.g. near-greedy for ASR)
+- `LlamaCancelFlag` — thread-safe hard stop; UI can call `cancel()` mid-generation
+
+### MTMDContext
+
+- Wraps `mtmd_context` lifecycle (init, free)
+- `MTMDBitmap` — decode JPEG/PNG/HEIC bytes → RGB24 via CGContext; or wrap PCM F32 audio
+- `MTMDChunks` / `MTMDChunk` — typed chunk iterator (text / image / audio) with token counts and M-RoPE position info
+- `tokenize(prompt:bitmaps:)` — splits a marked-up prompt into chunks aligned to bitmap list
+- `encode(chunk:)` — runs the vision/audio tower and exposes the output embedding pointer
 
 ---
 
@@ -19,77 +48,96 @@ LlamaSwift re-exports the compiled `llama` C library so Swift callers can use th
 
 ## How it works
 
-llama.cpp is a C/C++ library. To use it in a Swift project you need:
+```
+Your Swift code
+    ↓  import LlamaSwift
+LlamaContext / MTMDContext
+    ↓  (internal)
+llama.xcframework  ←  compiled from llama.cpp + libmtmd
+    ↓
+Gemma / llama model inference on-device (Metal)
+```
 
-1. A compiled `.xcframework` containing the static library and headers for each target (iOS device, iOS Simulator, macOS).
-2. A Swift Package that wraps that `.xcframework` as a `binaryTarget` and re-exports it so Swift code can `import LlamaSwift` directly.
+The `llama.xcframework` is a local binary target — it is not committed to this repo. You build it once from the llama.cpp source tree (see below).
 
-LlamaSwift does exactly step 2. Step 1 (building the xcframework) is handled by the build scripts inside the llama.cpp submodule.
+---
+
+## Project layout
 
 ```
 Dependencies/
-├── llama.cpp/                   # llama.cpp source + build scripts
+├── llama.cpp/                        # llama.cpp source (git submodule)
+│   ├── build-xcframework.sh          # text-only build
+│   ├── build-xcframework-mtmd.sh     # multimodal build (required for images/audio)
 │   └── build-apple/
-│       └── llama.xcframework   # compiled output (not committed to git)
-└── LlamaSwift/                  # this package
+│       └── llama.xcframework         # compiled output (not committed)
+└── LlamaSwift/                       # this package
     ├── Package.swift
     └── Sources/LlamaSwift/
-        └── Exports.swift        # @_exported import llama
+        ├── Exports.swift
+        ├── LlamaContext.swift
+        └── MTMDContext.swift
 ```
 
 ---
 
 ## Installation
 
-### Inside an Xcode project (local package)
-
-1. Build the xcframework first (from the `llama.cpp` directory):
+### 1. Build the xcframework
 
 ```bash
+cd Dependencies/llama.cpp
+
+# For text + images + audio (recommended):
+bash build-xcframework-mtmd.sh
+
+# Text-only:
 bash build-xcframework.sh
 ```
 
-2. In Xcode, go to **File › Add Package Dependencies › Add Local…** and select the `LlamaSwift` folder.
+Output goes to `Dependencies/llama.cpp/build-apple/llama.xcframework`.
 
-3. Import in Swift:
+### 2. Add the local package in Xcode
+
+**File › Add Package Dependencies › Add Local…** → select the `LlamaSwift` folder.
+
+### 3. Use in Swift
 
 ```swift
 import LlamaSwift
 
-// All llama.cpp C API symbols are now available directly
-let model = llama_model_load_from_file(path, params)
+// Load model
+let engine = try LlamaContext.create_context(path: "/path/to/model.gguf")
+
+// Optional: load multimodal projector
+engine.loadMMProj(path: "/path/to/mmproj.gguf")
+
+// Stream a text response
+try await engine.generateIncrementalResponse(newText: prompt) { token in
+    print(token, terminator: "")
+    return true  // return false to stop early
+}
+
+// Stream a response with an image
+let imageData: Data = ...  // JPEG / PNG / HEIC bytes
+try await engine.generateIncrementalResponseWithImages(
+    newText: "Describe this image. \(MTMDContext.mediaMarker)",
+    images: [imageData]
+) { token in
+    print(token, terminator: "")
+    return true
+}
 ```
-
-### As a dependency in another Swift Package
-
-Because the package references a local relative path for the xcframework, it is designed for local/submodule use rather than remote SPM resolution. Clone the repo alongside your project and add it as a local package.
-
----
-
-## Building the xcframework
-
-The xcframework is not committed to this repository (it is several hundred MB). Build it once from the llama.cpp submodule:
-
-```bash
-# Standard (text-only) build
-cd Dependencies/llama.cpp
-bash build-xcframework.sh
-
-# Multimodal build (includes mmproj support for vision/audio)
-bash build-xcframework-mtmd.sh
-```
-
-The output is written to `Dependencies/llama.cpp/build-apple/llama.xcframework`.
 
 ---
 
 ## Updating llama.cpp
 
-LlamaSwift pins to a specific llama.cpp commit for stability. To update:
+LlamaSwift pins to a specific llama.cpp commit for Metal stability. To update:
 
-1. Pull the desired llama.cpp commit in the submodule.
-2. Rebuild the xcframework with the script above.
-3. Run a full regression test on all supported iPhone models (thermal + accuracy).
+1. Pull the desired commit in the submodule.
+2. Rebuild the xcframework with `build-xcframework-mtmd.sh`.
+3. Run a full regression on all supported devices (thermal + output quality).
 
 ---
 
