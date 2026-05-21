@@ -1,6 +1,5 @@
 //
 //  MTMDContext.swift
-//  Gemholic
 //
 //  Swift bridge over libmtmd (llama.cpp multimodal). Owns the mtmd_context
 //  lifecycle and wraps the C primitives the app needs: tokenize prompt +

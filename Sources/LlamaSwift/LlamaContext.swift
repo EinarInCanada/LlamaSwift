@@ -1,8 +1,5 @@
 //
 //  LlamaContext.swift
-//  Gemholic
-//
-//  Created by Einar on 4/7/26.
 //
 import Foundation
 
